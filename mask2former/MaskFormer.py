@@ -108,7 +108,7 @@ class MaskFormer(nn.Module):
             weight_dict["loss_kd_feature"] = cfg.MODEL.KD.FEATURE_WEIGHT
             weight_dict["loss_kd_class"] = cfg.MODEL.KD.CLASS_WEIGHT
             weight_dict["loss_kd_mask"] = cfg.MODEL.KD.MASK_WEIGHT
-            weight_dict["loss_kd_query"] = 1
+            # weight_dict["loss_kd_query"] = 1
             # weight_dict["loss_kd_backbone"] = 0.5
 
         if cfg.MODEL.CON.ENABLE:
