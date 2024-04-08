@@ -1,0 +1,22 @@
+_BASE_: step0-R101.yaml
+
+DATASETS:
+  TASK: '5-3'
+  SHOT: 1
+  STEP: 0
+  EXTRA: True
+
+MODEL:
+  WEIGHTS: out/voc-R101-ClsAftSeg-noClass-detach-Con/voc_5-3_1shot/step0/model_best.pth
+
+OUTPUT_DIR: ./out/test
+
+TEST:
+  EVAL_PERIOD: 200
+
+SOLVER:
+  IMS_PER_BATCH: 1
+  TEST_IMS_PER_BATCH: 16
+  MAX_ITER: 100000
+  WEIGHT_DECAY: 0.001
+  BASE_LR: 0.0001

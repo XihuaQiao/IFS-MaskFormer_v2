@@ -1,0 +1,7 @@
+/out
+/data
+/detectron2
+/pretrained
+/list
+*.png
+*.jpg
