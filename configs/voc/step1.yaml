@@ -11,7 +11,7 @@ MODEL:
   WEIGHTS: out/voc-R101/voc_5-3_1shot/step0/model_best.pth # change to your path
   MASK_FORMER:
     PSEUDO_LABEL: True
-    NUM_EXTRA_QUERIES: 0
+    NUM_EXTRA_QUERIES: 14
     DEEP_SUPERVISION: True
     NO_OBJECT_WEIGHT: 0.1
     CLASS_WEIGHT: 5.0
