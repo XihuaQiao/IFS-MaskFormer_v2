@@ -2,6 +2,37 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+class CosineClassifier(nn.Module):
+    def __init__(self, classes, channels=256):
+        super().__init__()
+        self.channels = channels
+        self.cls = nn.ModuleList(
+            [nn.Conv1d(channels, c, 1, bias=False) for c in classes]
+        )
+        self.scaler = 10.
+        self.classes = classes
+        
+        # self.tot_classes = 0
+        # for lcl in classes:
+        #     self.tot_classes += lcl
+
+    def forward(self, x):
+        # input (B,Q,D)
+        # print(f"weight - {self.cls[1].weight.data.shape}")
+        x = x.transpose(-2, -1)     # (B,D,Q)
+        x = F.normalize(x, p=2, dim=1)
+        out = []
+        for i, mod in enumerate(self.cls):
+            out.append(self.scaler * F.conv1d(x, F.normalize(mod.weight, dim=1, p=2)))
+        return torch.cat(out, dim=1).transpose(-2, -1)
+    
+    # def init_weight(self, step):
+    #     old_weight = torch.mean(self.cls[step].weight.data, dim=0)
+    #     num = self.cls[step + 1].weight.data.shape[0]
+    #     print(f"old_weight - {old_weight.unsqueeze(0).repeat(num, 1, 1).shape}")
+    #     self.cls[step + 1].weight.data = old_weight.unsqueeze(0).repeat(num, 1, 1)
+
+
 class CoMFormerIncClassifier(nn.Module):
     def __init__(self, classes, norm_feat=False, channels=256, bias=True):
         super().__init__()

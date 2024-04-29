@@ -51,7 +51,7 @@ class MaskFormer(nn.Module):
 
         step: int,
         base_cls: list,
-
+        total_queries: int,
     ):
 
         super().__init__()
@@ -75,6 +75,13 @@ class MaskFormer(nn.Module):
         # additional args
         self.step = step
         self.base_cls = base_cls[1:]
+
+        # self.query_updates = {k:0 for k in range(total_queries)}
+        # self.base_query_updates = {k:0 for k in range(num_queries, total_queries)}
+        # self.novel_query_updates = {k:0 for k in range(num_queries)}
+        self.query_updates = np.zeros((21, total_queries))
+        self.novel_query_updates = np.zeros((21, num_queries))
+        self.base_query_updates = np.zeros((21, total_queries - num_queries))
 
     @classmethod
     def from_config(cls, cfg):
@@ -122,9 +129,9 @@ class MaskFormer(nn.Module):
             weight_dict.update(aux_weight_dict)
 
         losses = ["masks", "labels"]
-        if cfg.MODEL.KD.ENABLE:
+        if cfg.MODEL.KD.ENABLE and cfg.DATASETS.STEP > 0:
             losses.append("kd")
-        if cfg.MODEL.CON.ENABLE:
+        if cfg.MODEL.CON.ENABLE and cfg.DATASETS.STEP > 0:
             losses.append("con")
 
         criterion = SetCriterion(
@@ -139,31 +146,34 @@ class MaskFormer(nn.Module):
             temperature=cfg.MODEL.KD.TEMPERATURE,
             extra=cfg.DATASETS.EXTRA,
         )
-        '''
+
         novelCriterion = SetCriterion(
             sem_seg_head.num_classes,
             matcher=matcher,
             weight_dict=weight_dict,
             eos_coef=no_object_weight,
-            losses=losses.__add__(["con"]) if cfg.MODEL.CON.ENABLE else losses,
-            num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
-            oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
-            importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
-            temperature=cfg.MODEL.KD.TEMPERATURE,   
-        ) if cfg.DATASETS.STEP > 0 and cfg.MODEL.MASK_FORMER.NUM_EXTRA_QUERIES > 0 else None
-
-        baseCriterion = SetCriterion(
-            sem_seg_head.num_classes,
-            matcher=matcher,
-            weight_dict=weight_dict,
-            eos_coef=no_object_weight,
-            losses=losses.__add__(["kd"]) if cfg.MODEL.KD.ENABLE else losses,
+            # losses=losses.__add__(["con"]) if cfg.MODEL.CON.ENABLE else losses,
+            losses=["masks", "labels"],
             num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
             oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
             importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
             temperature=cfg.MODEL.KD.TEMPERATURE,
         ) if cfg.DATASETS.STEP > 0 else None
-        '''
+        # ) if cfg.DATASETS.STEP > 0 and cfg.MODEL.MASK_FORMER.NUM_EXTRA_QUERIES > 0 else None
+
+        baseCriterion = SetCriterion(
+            sem_seg_head.num_classes,
+            matcher=matcher,
+            # weight_dict={k:v if k != 'loss_kd_class' else 0. for k,v in weight_dict.items()},
+            weight_dict=weight_dict,
+            eos_coef=no_object_weight,
+            # losses=losses.__add__(["kd"]) if cfg.MODEL.KD.ENABLE else losses,
+            losses=["masks"],
+            num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
+            oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
+            importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
+            temperature=cfg.MODEL.KD.TEMPERATURE,
+        ) if cfg.DATASETS.STEP > 0 else None
 
         baseCriterion = None
         novelCriterion = None
@@ -190,27 +200,29 @@ class MaskFormer(nn.Module):
             "pre_norm": cfg.MODEL.MASK_FORMER.PRE_NORM,
             "conv_dim": cfg.MODEL.SEM_SEG_HEAD.CONVS_DIM,
             "step": cfg.DATASETS.STEP,
-            "base_cls": shot_generate(cfg.DATASETS.TASK, cfg.DATASETS.NAME),
+            "base_cls": shot_generate(cfg.DATASETS.TASK, cfg.DATASETS.NAME)[1],
+            "total_queries": cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES + cfg.MODEL.MASK_FORMER.NUM_EXTRA_QUERIES,
         }
 
     @property
     def device(self):
         return self.pixel_mean.device
-    
 
     def init_novel_stage(self):
         self.sem_seg_head.predictor.init_novel_stage()
 
     def seperate(self, outputs, targets):
 
+        #TODO background类别要如何处理？background不参与
+
         novel_outputs = {k: v[:, :self.num_queries:, ...] for k, v in outputs.items() if k != 'aux_outputs' and k != 'multi_scale_features'}
         base_outputs = {k: v[:, self.num_queries:, ...] for k, v in outputs.items() if k != 'aux_outputs' and k != 'multi_scale_features'}
-        base_outputs["multi_scale_features"] = outputs["multi_scale_features"]
+        # base_outputs["multi_scale_features"] = outputs["multi_scale_features"]
 
         novel_targets = []
         for tgt in targets:
-            _cls = tgt['labels'][[i for i, c in enumerate(tgt['labels']) if c not in self.base_cls]]
-            _mask = tgt['masks'][[i for i, c in enumerate(tgt['labels']) if c not in self.base_cls], ...]
+            _cls = tgt['labels'][[i for i, c in enumerate(tgt['labels']) if c not in self.base_cls and c != 0]]
+            _mask = tgt['masks'][[i for i, c in enumerate(tgt['labels']) if c not in self.base_cls and c != 0], ...]
             novel_targets.append({
                 'labels': _cls,
                 'masks': _mask,
@@ -238,7 +250,7 @@ class MaskFormer(nn.Module):
         
         features = self.backbone(images.tensor)
         outputs = self.sem_seg_head(features)
-        outputs["backbone"] = features
+        # outputs["backbone"] = features
 
         if self.training:
             assert "instances" in batched_inputs[0], f"There are no instances in batch_inputs! ({batched_inputs[0].keys()})"
@@ -252,6 +264,14 @@ class MaskFormer(nn.Module):
                                     [x['edge'] for x in batched_inputs] if 'edge' in batched_inputs[0].keys() else None
             )
 
+            # print("criterion: ", end='')
+            for indice in self.criterion.indices:
+                for (qIdxs, clses) in indice:
+                    for qIdx, cls in zip(qIdxs, clses):
+                        self.query_updates[cls, qIdx] += 1
+            #             print(f"{qIdx} - {cls}, ", end='')
+            # print("")
+
             for k in list(losses.keys()):
                 if k in self.criterion.weight_dict:
                     losses[k] *= self.criterion.weight_dict[k]
@@ -262,18 +282,32 @@ class MaskFormer(nn.Module):
                 novel_outputs, novel_targets, base_outputs, base_targets = self.seperate(outputs, targets)
 
             if self.novelCriterion:
+                # print("novel criterion: ", end='')
                 novel_losses = self.novelCriterion(novel_outputs, novel_targets, outputs_old)
+                for indice in self.novelCriterion.indices:
+                    for (qIdxs, clses) in indice:
+                        for qIdx, cls in zip(qIdxs, clses):
+                            self.novel_query_updates[cls, qIdx] += 1
+                #             print(f"{qIdx} - {cls}, ", end='')
+                # print("")
                 
                 for k in list(novel_losses.keys()):
                     if k in self.novelCriterion.weight_dict:
-                        losses[f"novel_{k}"] = self.novelCriterion.weight_dict[k] * novel_losses[k] * 4
+                        losses[f"novel_{k}"] = self.novelCriterion.weight_dict[k] * novel_losses[k] * 0.5
 
             if self.baseCriterion:
                 base_losses = self.baseCriterion(base_outputs, base_targets, outputs_old)
+                # print("base criterion: ", end='')
+                for indice in self.baseCriterion.indices:
+                    for (qIdxs, clses) in indice:
+                        for qIdx, cls in zip(qIdxs, clses):
+                            self.base_query_updates[cls, qIdx] += 1
+                #             print(f"{qIdx} - {cls}, ", end='')
+                # print("")
 
                 for k in list(base_losses.keys()):
                     if k in self.baseCriterion.weight_dict:
-                        losses[f"base_{k}"] = self.baseCriterion.weight_dict[k] * base_losses[k] * 0.5
+                        losses[f"base_{k}"] = self.baseCriterion.weight_dict[k] * base_losses[k] * 0.02
 
             return losses
         else:

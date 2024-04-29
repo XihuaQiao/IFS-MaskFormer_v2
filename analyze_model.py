@@ -3,7 +3,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = "max_split_size_mb:32"
 
 import torch
-# torch.distributed.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:23456', world_size=1, rank=0)
+torch.distributed.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:23456', world_size=1, rank=0)
 
 
 from detectron2.checkpoint.detection_checkpoint import DetectionCheckpointer
@@ -52,7 +52,7 @@ def main(args):
 
         for data in tqdm(data_loader):
             model(data, None)
-            indices = model.criterion.indices
+            indices = model.criterion.indices[0]
 
             for (qIdxs, clses) in indices:
                 for qIdx, cls in zip(qIdxs, clses):

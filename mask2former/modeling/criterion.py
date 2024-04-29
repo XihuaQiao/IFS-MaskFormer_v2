@@ -211,12 +211,17 @@ class SetCriterion(nn.Module):
         assert "pred_logits" in outputs
         src_logits = outputs["pred_logits"].float()
 
-        idx = self._get_src_permutation_idx(indices)
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(
             src_logits.shape[:2], self.num_classes, dtype=torch.int64, device=src_logits.device
         )
-        target_classes[idx] = target_classes_o
+
+        # if outputs["pred_logits"].shape[1] > 100:
+        # indices = [indices[0]]
+        
+        for indice in indices:
+            idx = self._get_src_permutation_idx(indice)
+            target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indice)])
+            target_classes[idx] = target_classes_o
 
         loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
         losses = {"loss_ce": loss_ce}
@@ -228,47 +233,58 @@ class SetCriterion(nn.Module):
         """
         assert "pred_masks" in outputs
 
-        src_idx = self._get_src_permutation_idx(indices)
-        tgt_idx = self._get_tgt_permutation_idx(indices)
-        src_masks = outputs["pred_masks"]
-        src_masks = src_masks[src_idx]
-        masks = [t["masks"] for t in targets]
-        # TODO use valid to mask invalid areas due to padding in loss
-        target_masks, valid = nested_tensor_from_tensor_list(masks).decompose()
-        target_masks = target_masks.to(src_masks)
-        target_masks = target_masks[tgt_idx]
+        losses = {"loss_mask": torch.tensor(0.0).to(outputs["pred_masks"].device),
+                  "loss_dice": torch.tensor(0.0).to(outputs["pred_masks"].device)}
+        
+        indices = [indices[0]]
 
-        # No need to upsample predictions as we are using normalized coordinates :)
-        # N x 1 x H x W
-        src_masks = src_masks[:, None]
-        target_masks = target_masks[:, None]
+        for i, indice in enumerate(indices):
 
-        with torch.no_grad():
-            # sample point_coords
-            point_coords = get_uncertain_point_coords_with_randomness(
-                src_masks, 
-                lambda logits: calculate_uncertainty(logits),
-                self.num_points,
-                self.oversample_ratio,
-                self.importance_sample_ratio,
-            )
-            # get gt labels
-            point_labels = point_sample(
-                target_masks,
+            src_idx = self._get_src_permutation_idx(indice)
+            tgt_idx = self._get_tgt_permutation_idx(indice)
+
+            src_masks = outputs["pred_masks"]
+            src_masks = src_masks[src_idx]
+            masks = [t["masks"] for t in targets]
+            # TODO use valid to mask invalid areas due to padding in loss
+            target_masks, valid = nested_tensor_from_tensor_list(masks).decompose()
+            target_masks = target_masks.to(src_masks)
+            target_masks = target_masks[tgt_idx]
+
+            # No need to upsample predictions as we are using normalized coordinates :)
+            # N x 1 x H x W
+            src_masks = src_masks[:, None]
+            target_masks = target_masks[:, None]
+
+            with torch.no_grad():
+                # sample point_coords
+                point_coords = get_uncertain_point_coords_with_randomness(
+                    src_masks, 
+                    lambda logits: calculate_uncertainty(logits),
+                    self.num_points,
+                    self.oversample_ratio,
+                    self.importance_sample_ratio,
+                )
+                # get gt labels
+                point_labels = point_sample(
+                    target_masks,
+                    point_coords,
+                    align_corners=False,
+                ).squeeze(1)
+
+            point_logits = point_sample(
+                src_masks,
                 point_coords,
                 align_corners=False,
             ).squeeze(1)
 
-        point_logits = point_sample(
-            src_masks,
-            point_coords,
-            align_corners=False,
-        ).squeeze(1)
+            if i > 0:
+                w = 0.1
+            else:
+                w = 1
 
-        losses = {
-            "loss_mask": sigmoid_ce_loss_jit(point_logits, point_labels, num_masks),
-            "loss_dice": dice_loss_jit(point_logits, point_labels, num_masks),
-        }
+            losses["loss_mask"] += sigmoid_ce_loss_jit(point_logits, point_labels, num_masks) * w
+            losses["loss_dice"] += dice_loss_jit(point_logits, point_labels, num_masks) * w
 
         del src_masks
         del target_masks
@@ -277,17 +293,19 @@ class SetCriterion(nn.Module):
     def loss_kd(self, outputs, targets, indices, num_masks, outputs_old):
         assert outputs_old is not None, "Using loss_kd should provide outputs_old!"
         # print(f"outputs - {outputs['query_features'].shape}, outputs_old - {outputs_old['query_features'].shape}")
+        if outputs['pred_logits'].shape[1] == len(self.strong_queries):
+            outputs_old['pred_logits'] = outputs_old['pred_logits'][:, self.strong_queries, ...]
+            outputs_old['pred_masks'] = outputs_old['pred_masks'][:, self.strong_queries, ...]
+
         losses  = {
-            "loss_kd_feature": sum([self.L2_loss(output, output_old) 
-                                    for output, output_old in zip(outputs["multi_scale_features"], outputs_old["multi_scale_features"])]),     # （B,Q,D)
-            "loss_kd_mask": self.L2_loss(outputs["pred_masks"], outputs_old["pred_masks"]),     # (B,Q,H,W)                                                 
+            "loss_kd_mask": self.L2_loss(outputs["pred_masks"][:, :outputs_old['pred_masks'].shape[1], ...], outputs_old["pred_masks"]),     # (B,Q,H,W)                                                 
             "loss_kd_class": knowledge_distillation_loss_jit(
-                outputs["pred_logits"], outputs_old["pred_logits"], 'batchmean', self.temperature, -1), # (B,Q,C+1)  
-            # "loss_kd_backbone": sum([self.L2_loss(output, output_old)
-            #                          for output, output_old in zip(outputs["backbone"].values(), outputs_old["backbone"].values())]
-            # ),
-            # "loss_kd_query": self.L2_loss(outputs['query_features'][:, self.strong_queries, ...], outputs_old['query_features']),    
+                outputs["pred_logits"][:, :outputs_old['pred_logits'].shape[1], ...], outputs_old["pred_logits"], 'batchmean', self.temperature, -1), # (B,Q,C+1)    
         }
+
+        if 'multi_scale_features' in outputs.keys():
+            losses['loss_kd_feature'] = sum([self.L2_loss(output, output_old) 
+                                             for output, output_old in zip(outputs["multi_scale_features"], outputs_old["multi_scale_features"])])     # （B,Q,D)
 
         return losses
     
@@ -431,7 +449,7 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_masks, outputs_old)
 
-    def forward(self, outputs, targets, outputs_old, img_shapes, names, det_edges):
+    def forward(self, outputs, targets, outputs_old, img_shapes=None, names=None, det_edges=None):
         """This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -450,11 +468,16 @@ class SetCriterion(nn.Module):
         # for analyze the model 
         self.indices = copy.deepcopy(indices)
         for i in range(len(self.indices)):
-            # print(self.indices[i])
-            (_, J) = self.indices[i]
-            clses = targets[i]["labels"]
-            self.indices[i] = (_.tolist(), [clses[j].item() for j in J])
-            # print(f"query {self.indices[i][0]} - class {[CLASS_NAMES[idx] for idx in self.indices[i][1]]}")
+            for j in range(len(self.indices[i])):
+                (_, J) = self.indices[i][j]
+                clses = targets[j]["labels"]
+                self.indices[i][j] = (_.tolist(), [clses[j].item() for j in J])
+        # for i in range(len(self.indices)):
+        #     # print(self.indices[i])
+        #     (_, J) = self.indices[i]
+        #     clses = targets[i]["labels"]
+        #     self.indices[i] = (_.tolist(), [clses[j].item() for j in J])
+        #     # print(f"query {self.indices[i][0]} - class {[CLASS_NAMES[idx] for idx in self.indices[i][1]]}")
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_masks = sum(len(t["labels"]) for t in targets)

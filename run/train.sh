@@ -15,9 +15,9 @@ shopt -s expand_aliases
 
 gen_par="MODEL.WEIGHTS ${weight} OUTPUT_DIR ${out}"
 
-for ns in 1; do
-    for is in 0 1 2; do
-      inc_par="DATASETS.SHOT ${ns} DATASETS.iSHOT ${is}"
-          exp ${inc_par} ${gen_par} ${extra}
-    done
+for ns in 5; do
+  for is in 0 1 2; do
+    inc_par="DATASETS.SHOT ${ns} DATASETS.iSHOT ${is}"
+      exp ${inc_par} ${gen_par} ${extra}
+  done
 done

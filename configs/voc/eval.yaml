@@ -5,10 +5,10 @@ _BASE_: Base-VOC11K-20.yaml
 DATASETS:
   TASK: '5-3'
   SHOT: 1
-  STEP: 0
+  STEP: 1
 MODEL:
-  # BACKBONE:
-  #   FREEZE_AT: 5
+  BACKBONE:
+    FREEZE_AT: 5
   META_ARCHITECTURE: "MaskFormer"    # POS / MMFormer  
   WEIGHTS: "/media/data/qxh/workspace/IFS-MaskFormer/trained_models/R101-lr00011-WD01-plus/model_best.pth"
   RESNETS:
@@ -34,6 +34,7 @@ MODEL:
     COMMON_STRIDE: 4
     TRANSFORMER_ENC_LAYERS: 6
   MASK_FORMER:
+    NUM_EXTRA_QUERIES: 14
     TRANSFORMER_DECODER_NAME: "MultiScaleMaskedTransformerDecoder"
     TRANSFORMER_IN_FEATURE: "multi_scale_pixel_decoder"
     DEEP_SUPERVISION: True
@@ -65,4 +66,4 @@ OUTPUT_DIR: ./out/eval/
 
 SOLVER:
   IMS_PER_BATCH: 16
-  TEST_IMS_PER_BATCH: 16
+  TEST_IMS_PER_BATCH: 8

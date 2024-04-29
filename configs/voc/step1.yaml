@@ -11,7 +11,7 @@ MODEL:
   WEIGHTS: out/voc-R101/voc_5-3_1shot/step0/model_best.pth # change to your path
   MASK_FORMER:
     PSEUDO_LABEL: True
-    NUM_EXTRA_QUERIES: 14
+    NUM_EXTRA_QUERIES: 0
     DEEP_SUPERVISION: True
     NO_OBJECT_WEIGHT: 0.1
     CLASS_WEIGHT: 5.0
@@ -39,10 +39,10 @@ MODEL:
   # BACKBONE:
   #   FREEZE_AT: 5
   KD:
-    ENABLE: True
-    FEATURE_WEIGHT: 0.5
-    MASK_WEIGHT: 0.01
-    CLASS_WEIGHT: 0.01
+    ENABLE: False
+    FEATURE_WEIGHT: 0.01
+    MASK_WEIGHT: 0.0
+    CLASS_WEIGHT: 0.0
     TEMPERATURE: 2.0
   CON:
     ENABLE: False

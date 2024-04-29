@@ -9,6 +9,8 @@ from scipy.optimize import linear_sum_assignment
 from torch import nn
 from torch.cuda.amp import autocast
 
+from copy import copy
+
 from detectron2.projects.point_rend.point_features import point_sample
 
 
@@ -154,6 +156,25 @@ class HungarianMatcher(nn.Module):
             (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
             for i, j in indices
         ]
+    
+
+    def extra_matching(self, queries, outputs, targets, num_queries):
+        mapping = []
+        for i in range(num_queries):
+            if i not in queries:
+                mapping.append(i)
+
+        _outputs = {}
+        _outputs["pred_logits"] = outputs["pred_logits"][:, [i for i in range(num_queries) if i not in queries], ...]
+        _outputs["pred_masks"] = outputs["pred_masks"][:, [i for i in range(num_queries) if i not in queries], ...]
+        
+        res = self.memory_efficient_forward(_outputs, targets)
+        for i in range(len(res)):
+            for j in range(len(res[i][0])):
+                res[i][0][j] = mapping[res[i][0][j]]
+
+        return res
+
 
     @torch.no_grad()
     def forward(self, outputs, targets):
@@ -176,7 +197,21 @@ class HungarianMatcher(nn.Module):
             For each batch element, it holds:
                 len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
         """
-        return self.memory_efficient_forward(outputs, targets)
+        res1 = self.memory_efficient_forward(outputs, targets)
+
+        num_queries = outputs['pred_logits'].shape[1]
+        queries = set([x.item() for sublist in [indice[0] for indice in res1] for x in sublist])
+        res2 = self.extra_matching(queries, outputs, targets, num_queries)
+
+        queries = queries.union(set([x.item() for sublist in [indice[0] for indice in res2] for x in sublist]))
+        res3 = self.extra_matching(queries, outputs, targets, num_queries)
+        
+        # if outputs['pred_logits'].shape[1] == 100:
+        #     return [res1, res2, res3]
+        # else:
+        #     return [res1]
+
+        return [res1]
 
     def __repr__(self, _repr_indent=4):
         head = "Matcher " + self.__class__.__name__

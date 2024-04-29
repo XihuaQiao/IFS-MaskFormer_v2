@@ -13,7 +13,7 @@ from detectron2.layers import Conv2d
 from .position_encoding import PositionEmbeddingSine
 from detectron2.utils.registry import Registry
 
-from .Classifier import MicroSegHead, CoMFormerCosClassifier, CoMFormerIncClassifier, MLPHead
+from .Classifier import MicroSegHead, CoMFormerCosClassifier, CoMFormerIncClassifier, MLPHead, CosineClassifier
 
 
 
@@ -352,7 +352,9 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         # output FFNs
         if self.mask_classification:
-            self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
+            classes = [1, 15, 5, 1]
+            self.class_embed = CosineClassifier(classes, channels=hidden_dim)
+            # self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
             # classes = [1, 15, 5, 1]
             # self.class_embed = MicroSegHead(classes, hidden_dim=hidden_dim)
             # self.class_embed = MLPHead(hidden_dim, hidden_dim, 22, 3)
@@ -395,8 +397,13 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         return ret
     
+
+    def imprint_weights_step(self, features, step):
+        self.class_embed.cls[step + 1].weight.data = features.view_as(self.class_embed.cls[step + 1].weight.data)
+    
     
     def init_novel_stage(self):
+        # self.class_embed.init_weight(self.step)
         if self.num_extra_queries > 0:
             print(f"Using <{self.num_extra_queries}> extra queries.")
             
@@ -406,6 +413,9 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 init_extra_embed = self.query_embed.weight.detach()[self.strong_queries, :]
 
                 device = self.query_feat.weight.device
+
+                # self.query_feat.weight[self.strong_queries, :] = self.query_feat.weight.detach()[self.strong_queries, :] + self.extra_query_feat.weight.detach()
+                # self.query_embed.weight[self.strong_queries, :] = self.query_embed.weight.detach()[self.strong_queries, :] + self.extra_query_embed.weight.detach()
 
                 self.extra_query_feat = nn.Embedding.from_pretrained(init_extra_feat).to(device)
                 self.extra_query_embed = nn.Embedding.from_pretrained(init_extra_embed).to(device)
@@ -449,6 +459,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             # Q = [12, 15, 42, 47, 74, 75]
             # Q = [10, 17, 46, 51, 54, 69, 81, 92]
             # Q = [0, 31, 35, 38, 39, 46, 47]
+            # Q = [2, 10, 16, 24, 26, 31, 43, 60, 65, 72, 88]
             # query_embed = self.query_embed.weight[Q, :].unsqueeze(1).repeat(1, bs, 1)
             # output = self.query_feat.weight[Q, :].unsqueeze(1).repeat(1, bs, 1)
             query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)

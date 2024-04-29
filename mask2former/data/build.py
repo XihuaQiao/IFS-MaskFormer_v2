@@ -338,7 +338,7 @@ def build_detection_test_loader(
         batch_sampler=batch_sampler,
         collate_fn=trivial_batch_collator,
     )
-    return data_loader
+    return data_loader, dataset
 
 
 def dataset_sample_per_class(cfg):
