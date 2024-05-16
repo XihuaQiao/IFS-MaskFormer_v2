@@ -11,26 +11,23 @@ class CosineClassifier(nn.Module):
         )
         self.scaler = 10.
         self.classes = classes
-        
+
         # self.tot_classes = 0
         # for lcl in classes:
         #     self.tot_classes += lcl
 
     def forward(self, x):
         # input (B,Q,D)
-        # print(f"weight - {self.cls[1].weight.data.shape}")
         x = x.transpose(-2, -1)     # (B,D,Q)
         x = F.normalize(x, p=2, dim=1)
         out = []
         for i, mod in enumerate(self.cls):
             out.append(self.scaler * F.conv1d(x, F.normalize(mod.weight, dim=1, p=2)))
+        
         return torch.cat(out, dim=1).transpose(-2, -1)
     
-    # def init_weight(self, step):
-    #     old_weight = torch.mean(self.cls[step].weight.data, dim=0)
-    #     num = self.cls[step + 1].weight.data.shape[0]
-    #     print(f"old_weight - {old_weight.unsqueeze(0).repeat(num, 1, 1).shape}")
-    #     self.cls[step + 1].weight.data = old_weight.unsqueeze(0).repeat(num, 1, 1)
+    def init_weight(self, features, step):
+        self.cls[step + 1].weight.data = features.view_as(self.cls[step + 1].weight.data)
 
 
 class CoMFormerIncClassifier(nn.Module):

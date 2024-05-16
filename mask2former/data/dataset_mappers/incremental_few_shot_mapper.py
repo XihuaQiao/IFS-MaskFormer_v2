@@ -139,7 +139,8 @@ class IncrementalFewShotSemanticDatasetMapper:
 
     def gen_pseudo_label(self, file_name, sem_seg_gt, novel_cls):
         sem_seg_pred = self.pseudo_labels[file_name].astype("double")
-        base_classes = list(np.unique(sem_seg_pred))
+        base_classes = [i for i in list(np.unique(sem_seg_pred)) if i != novel_cls]
+        # base_classes = list(np.unique(sem_seg_pred))
         #TODO base_classes 是否包含0
         if 0 in base_classes:
             base_classes.remove(0)
@@ -150,8 +151,10 @@ class IncrementalFewShotSemanticDatasetMapper:
             if base_and_novel / base > 0.5 and base_and_novel / novel > 0.5:
                 # 抹除这个base class的存在
                 # print(f"removing sem_seg_pred of class {base_cls} in image {file_name}")
-                sem_seg_pred[sem_seg_pred == base_cls] = 0
+                sem_seg_pred[sem_seg_pred == base_cls] = sem_seg_gt[sem_seg_pred == base_cls]
         sem_seg_pred[sem_seg_gt == novel_cls] = novel_cls
+
+        # print(f"cls - {np.unique(sem_seg_pred)}")
 
         return sem_seg_pred
 

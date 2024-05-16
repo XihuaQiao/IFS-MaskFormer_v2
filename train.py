@@ -1,13 +1,14 @@
 import logging
 import os, json
 
+# os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = "max_split_size_mb:32"
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
 from detectron2.modeling.postprocessing import sem_seg_postprocess
 from mask2former.data.build import get_detection_dataset_dicts
 from mask2former.data.utils import shot_generate
 
-# os.environ['CUDA_VISIBLE_DEVICES'] = '3'
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = "max_split_size_mb:32"
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 from collections import OrderedDict
 import copy
@@ -27,8 +28,12 @@ torch.cuda.manual_seed_all(0)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
 
+from tqdm import tqdm
+
 import torch.nn.functional as F
 import copy
+
+import cv2
 
 # torch.set_num_threads(4)
 # torch.distributed.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:23450', world_size=1, rank=0)
@@ -133,8 +138,12 @@ def build_optimizer(cfg, model):
             for module_param_name, value in module.named_parameters(recurse=False):
                 if "backbone" in module_name:
                     value.requires_grad = False
-                if "class_embed.cls.1" in module_name:
-                    value.requires_grad = False
+                # if "class_embed.cls.1" in module_name:
+                #     value.requires_grad = False
+                # if "class_embed.cls.0" in module_name:
+                #     value.requires_grad = False
+                # if not "class_embed.cls.2" in module_name:
+                #     value.requires_grad = False
 
         for module_name, module in model.named_modules():
             for module_param_name, value in module.named_parameters(recurse=False):     
@@ -145,10 +154,14 @@ def build_optimizer(cfg, model):
                     continue
                 memo.add(value)
                 hyperparams = copy.copy(defaults)
-                # if "pixel_decoder" in module_name:
-                #     hyperparams["lr"] = hyperparams["lr"] * 2
-                if "class_embed.cls.2" in module_name:
-                    hyperparams["lr"] = hyperparams["lr"] * 10
+                # if "backbone" in module_name:
+                #     hyperparams["lr"] = hyperparams["lr"] * 0.2
+                # if "class_embed.cls.1" in module_name:
+                #     hyperparams["lr"] = hyperparams["lr"] * 0.5
+                # if "mask_embed" in module_name:
+                #     hyperparams["lr"] = hyperparams["lr"] * 5
+                # if "class_embed.cls.2" in module_name:
+                #     hyperparams["lr"] = hyperparams["lr"] * 5
                 if (
                     "relative_position_bias_table" in module_param_name
                     or "absolute_pos_embed" in module_param_name
@@ -245,8 +258,7 @@ def build_train_loader(cfg, predictor):
     mapper = IncrementalFewShotSemanticDatasetMapper(cfg, is_train=True, predictor=predictor)
     return build_detection_train_loader(cfg, mapper=mapper)
 
-def do_train(cfg, model, model_old, predictor, resume=False, test_loaders = None, evaluators = None):
-    
+def do_train(cfg, model, model_old, predictor, resume=False, test_loaders = None, evaluators = None, cfg_old=None):
 
     model.train()
     if model_old:
@@ -273,7 +285,7 @@ def do_train(cfg, model, model_old, predictor, resume=False, test_loaders = None
             model.init_novel_stage()
     
     # max_iter = cfg.SOLVER.MAX_ITER
-    max_iter = 250
+    max_iter = 100
 
     periodic_checkpointer = PeriodicCheckpointer(
         checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD, max_iter=max_iter
@@ -288,12 +300,35 @@ def do_train(cfg, model, model_old, predictor, resume=False, test_loaders = None
     # compared to "train_net.py", we do not support accurate timing and
     # precise BN here, because they are not trivial to implement in a small training loop
     # data_loader = build_detection_train_loader(cfg)
+
+    if cfg.DATASETS.STEP > 0 and not resume:
+        # warm_up(cfg, model_old, model, distributed=comm.get_world_size() > 1, epoch=5)
+        # cool_down(cfg_old, model_old, model, distributed=comm.get_world_size() > 1, epoch=1)
+
+        # torch.save(model.state_dict(), f"pretrained/CosineCls-noClass-detach-{cfg.DATASETS.SHOT}shot-{cfg.DATASETS.iSHOT}.pth")
+        d = f"pretrained/CosineCls-noClass-detach-{cfg.DATASETS.SHOT}shot-{cfg.DATASETS.iSHOT}.pth"
+        print(f"loading pretrained model from {d}")
+        if comm.get_world_size() > 1:
+            weights = torch.load(d, map_location=model.module.device)
+            model.module.load_state_dict(weights, strict=False)
+        else:
+            weights = torch.load(d, map_location=model.device)
+            model.load_state_dict(weights, strict=False)
+        model_old.load_state_dict(weights, strict=True)
+        predictor.model.load_state_dict(weights, strict=True)
+
+        # feat = model.sem_seg_head.predictor.class_embed.cls[0].weight.data
+        # model_old.sem_seg_head.predictor.imprint_weights_step(feat, -1)
+        # feat = model.sem_seg_head.predictor.class_embed.cls[1].weight.data
+        # model_old.sem_seg_head.predictor.imprint_weights_step(feat, 0)
+
+        # torch.save(model_old.state_dict(), f"pretrained/CosineCls.pth")
+        # print(f"finish saving~")
+
+        # model.train()
+
     train_loader = build_train_loader(cfg, predictor)
     logger.info("Starting training from iteration {}".format(start_iter))
-
-    # if cfg.DATASETS.STEP > 0 and not resume:
-    #     warm_up(cfg, model, distributed=comm.get_world_size() > 1, dataset=train_loader, epoch=5)
-    #     model.train()
 
     best_eval = 0
 
@@ -355,10 +390,10 @@ def do_train(cfg, model, model_old, predictor, resume=False, test_loaders = None
                     writer.write()
             periodic_checkpointer.step(iteration)
 
-    import pandas as pd
-    pd.DataFrame(model.module.query_updates).to_csv(f"{cfg.OUTPUT_DIR}/query_updates.csv")
-    pd.DataFrame(model.module.base_query_updates).to_csv(f"{cfg.OUTPUT_DIR}/base_query_updates.csv")
-    pd.DataFrame(model.module.novel_query_updates).to_csv(f"{cfg.OUTPUT_DIR}/novel_query_updates.csv")
+    # import pandas as pd
+    # pd.DataFrame(model.module.query_updates).to_csv(f"{cfg.OUTPUT_DIR}/query_updates.csv")
+    # pd.DataFrame(model.module.base_query_updates).to_csv(f"{cfg.OUTPUT_DIR}/base_query_updates.csv")
+    # pd.DataFrame(model.module.novel_query_updates).to_csv(f"{cfg.OUTPUT_DIR}/novel_query_updates.csv")
 
 
 def setup(args):
@@ -386,22 +421,66 @@ def setup(args):
     return cfg
 
 
-def setupOld(file):
+def setupOld(file, model_weights):
     assert file, "ERROR: when using Knowledge Distillation, cfg.MODEL.CONFIG shoule be provided!"
     cfg = get_cfg()
     add_deeplab_config(cfg)
     add_maskformer2_config(cfg)
     cfg.merge_from_file(file)
+    cfg.MODEL.WEIGHTS = model_weights
     cfg.freeze()
     return cfg
 
 
-def warm_up(cfg, model, distributed, dataset, epoch=5):
+def cool_down(cfg_old, model_old, model, distributed, epoch=5):
+    # model_old = model_old.module if distributed else model_old
     model = model.module if distributed else model
-    model.eval()
+    device = model.device
+    
+    _, base_classes, novel_classes = shot_generate(cfg_old.DATASETS.TASK, cfg_old.DATASETS.NAME)
+    # base_classes = base_classes[1:]     # 排除bkg类别
+    print(f"base_classes - {base_classes}")
+
+    sum_features = torch.zeros(len(base_classes), cfg_old.MODEL.MASK_FORMER.HIDDEN_DIM).to(device)
+
+    mapper = IncrementalFewShotSemanticDatasetMapper(cfg_old, is_train=False)
+    _, dataset = build_detection_test_loader(cfg_old, cfg_old.DATASETS.TRAIN[0], mapper=mapper)
+
+    count = torch.zeros(len(base_classes)).to(device)
+    for ep in range(epoch):
+        with torch.no_grad():
+            for idx in tqdm(range(len(dataset)), desc=f"epoch {ep}: "):
+                data = dataset[idx]
+                out_size = data['image'].shape[-2:]
+                out = F.interpolate(model_old([data])['multi_scale_features'][0], size=out_size, mode='bilinear', align_corners=False).squeeze_(0)
+                
+                for i, cl in enumerate(data['instances'].gt_classes):
+                    # if cl == 0: continue
+                    mask = copy.deepcopy(data['instances'].gt_masks[i]).to(device).float()
+                    feat = out[:, mask == 1.0]
+                    feat = F.normalize(F.normalize(feat, dim=0).sum(dim=1), dim=0)
+                    for j, _ in enumerate(base_classes):
+                        if _ == cl: _idx = j
+                    sum_features[_idx] += feat
+                    count[_idx] += 1
+
+                    # del mask
+    
+    assert torch.any(count != 0), "Error, a base class has no pixels"
+    features = F.normalize(sum_features, dim=1)
+    print(f"cool down! at step {cfg_old.DATASETS.STEP}")
+    model.sem_seg_head.predictor.imprint_weights_step(step=-1, features=features[0:1, ...])
+    model.sem_seg_head.predictor.imprint_weights_step(step=cfg_old.DATASETS.STEP, features=features[1:, ...])
+
+
+def warm_up(cfg, model_old, model, distributed, epoch=5):
+    # model_old = model_old.module if distributed else model_old
+    model = model.module if distributed else model
+    # model_old.eval()
     device = model.device
     _, base_classes, novel_classes = shot_generate(cfg.DATASETS.TASK, cfg.DATASETS.NAME)
-    sum_features = torch.zeros(len(novel_classes), cfg.MODEL.SEM_SEG_HEAD.CONVS_DIM).to(device)
+    print(f"novel_classes - {novel_classes}")
+    sum_features = torch.zeros(len(novel_classes), cfg.MODEL.MASK_FORMER.HIDDEN_DIM).to(device)
 
     mapper = IncrementalFewShotSemanticDatasetMapper(cfg, is_train=False)
     _, dataset = build_detection_test_loader(cfg, cfg.DATASETS.TRAIN[0], mapper = mapper)
@@ -409,29 +488,45 @@ def warm_up(cfg, model, distributed, dataset, epoch=5):
     count = torch.zeros(len(novel_classes)).to(device)
     for ep in range(epoch):
         with torch.no_grad():
-            for idx in range(len(dataset)):
+            for idx in tqdm(range(len(dataset)), desc=f"epoch {ep}: "):
                 data = dataset[idx]
-                _features = model([data])['multi_scale_features']
-                out = _features[-2]
+                '''
+                out = model([data])['multi_scale_features'][0]
                 out_size = data['image'].shape[-2:]     # (512, 512)
                 out = F.interpolate(out, size=out_size, mode='bilinear', align_corners=False).squeeze_(0)
                 # out += F.interpolate(_features[-3], size=out_size, mode='bilinear', align_corners=False).squeeze_(0)
                 # out = sem_seg_postprocess(out, out_size, data['height'], data['width'])
+
+                '''
+
+                out_size = data['image'].shape[-2:]
+                out = F.interpolate(model_old([data])['multi_scale_features'][0], size=out_size, mode='bilinear', align_corners=False).squeeze_(0)
+
                 cl = data['novel_class']
                 for i, _ in enumerate(data['instances'].gt_classes):
-                    if _ == cl: idx = i
-                mask = copy.deepcopy(data['instances'].gt_masks[idx]).to(device)
-                feat = out[:, mask == 1]
+                    if _ == cl: _idx = i
+                mask = copy.deepcopy(data['instances'].gt_masks[_idx]).to(device).float()
+                
+                # from mask2former.data.datasets.register_voc_fewshotseg import CLASS_NAMES
+                # _img = np.int8(mask.cpu().numpy())
+                # _img = _img * 255
+                # cv2.imwrite(f"./imgs/{data['file_name'].split('/')[-1].split('.')[0]}_{CLASS_NAMES[cl]}_mask.png", _img)
+                # _img = data['image'].cpu().numpy().transpose(1, 2, 0)
+                # _img = cv2.cvtColor(_img, cv2.COLOR_RGB2BGR)
+                # cv2.imwrite(f"./imgs/{data['file_name'].split('/')[-1].split('.')[0]}_{CLASS_NAMES[cl]}.jpg", _img)
+
+                feat = out[:, mask == 1.0]  # D * F
                 feat = F.normalize(F.normalize(feat, dim=0).sum(dim=1), dim=0)
                 for i, _ in enumerate(novel_classes):
-                    if _ == cl: idx = i
-                sum_features[i] += feat
-                count[i] += 1
+                    if _ == cl: _idx = i
+                sum_features[_idx] += feat
+                count[_idx] += 1
 
     assert torch.any(count != 0), "Error, a novel class has no pixels"
     features = F.normalize(sum_features, dim=1)
+    print(f"warm up! at step {cfg.DATASETS.STEP}")
     model.sem_seg_head.predictor.imprint_weights_step(step=cfg.DATASETS.STEP, features=features)
-                
+
 
 def main(args):
     cfg = setup(args)
@@ -452,14 +547,14 @@ def main(args):
         test_loaders.append(test_loader)
         evaluators.append(evaluator)
 
-    logger.info("Model:\n{}".format(model))
+    # logger.info("Model:\n{}".format(model))
     if args.eval_only:
         DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
             cfg.MODEL.WEIGHTS, resume=args.resume
         )
         return do_test(cfg, model, test_loaders, evaluators)
 
-    cfg_old = setupOld(cfg.MODEL.CONFIG) if cfg.MODEL.KD.ENABLE or cfg.MODEL.MASK_FORMER.PSEUDO_LABEL else None
+    cfg_old = setupOld(cfg.MODEL.CONFIG, cfg.MODEL.WEIGHTS) if cfg.MODEL.KD.ENABLE or cfg.MODEL.MASK_FORMER.PSEUDO_LABEL else None
     model_old = build_model(cfg_old) if cfg.MODEL.KD.ENABLE else None
     predictor = DemoPredictor(cfg_old) if cfg.MODEL.MASK_FORMER.PSEUDO_LABEL else None
 
@@ -469,8 +564,9 @@ def main(args):
             model, device_ids=[comm.get_local_rank()], broadcast_buffers=False, find_unused_parameters=True
         )
 
-    do_train(cfg, model, model_old, predictor, resume=args.resume, test_loaders=test_loaders, evaluators=evaluators)
-    # return do_test(cfg, model)
+    do_train(cfg, model, model_old, predictor, resume=args.resume, test_loaders=test_loaders, evaluators=evaluators, cfg_old=cfg_old)
+
+    # return do_test(cfg, model, test_loaders, evaluators)
 
 
 if __name__ == "__main__":

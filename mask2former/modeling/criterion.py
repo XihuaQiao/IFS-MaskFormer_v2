@@ -199,8 +199,7 @@ class SetCriterion(nn.Module):
         self.temperature = temperature
         self.extra = extra
 
-        self.strong_queries = [10, 12, 15, 17, 42, 46, 47, 51, 54, 69, 74, 75, 81, 92]
-        self.old_classes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        self.strong_queries = [7, 10, 25, 30, 38, 39, 43, 65, 66, 75, 77, 79, 92, 99]
 
         self.L2_loss = nn.MSELoss()
 
@@ -236,7 +235,7 @@ class SetCriterion(nn.Module):
         losses = {"loss_mask": torch.tensor(0.0).to(outputs["pred_masks"].device),
                   "loss_dice": torch.tensor(0.0).to(outputs["pred_masks"].device)}
         
-        indices = [indices[0]]
+        # indices = [indices[0]]
 
         for i, indice in enumerate(indices):
 
@@ -279,7 +278,7 @@ class SetCriterion(nn.Module):
             ).squeeze(1)
 
             if i > 0:
-                w = 0.1
+                w = 0.5
             else:
                 w = 1
 
@@ -300,12 +299,22 @@ class SetCriterion(nn.Module):
         losses  = {
             "loss_kd_mask": self.L2_loss(outputs["pred_masks"][:, :outputs_old['pred_masks'].shape[1], ...], outputs_old["pred_masks"]),     # (B,Q,H,W)                                                 
             "loss_kd_class": knowledge_distillation_loss_jit(
-                outputs["pred_logits"][:, :outputs_old['pred_logits'].shape[1], ...], outputs_old["pred_logits"], 'batchmean', self.temperature, -1), # (B,Q,C+1)    
+                outputs["pred_logits"][:, :outputs_old['pred_logits'].shape[1], :-1], outputs_old["pred_logits"][:, :, :-1], 'batchmean', self.temperature, -1), # (B,Q,C+1)    
         }
 
         if 'multi_scale_features' in outputs.keys():
+            idx = [0]
+            feat = [outputs["multi_scale_features"][i] for i in idx]
+            feat_old = [outputs_old["multi_scale_features"][i] for i in idx]
             losses['loss_kd_feature'] = sum([self.L2_loss(output, output_old) 
-                                             for output, output_old in zip(outputs["multi_scale_features"], outputs_old["multi_scale_features"])])     # （B,Q,D)
+                                             for output, output_old in zip(feat, feat_old)]) / len(idx)
+        
+        if 'backbone_features' in outputs.keys():
+            idx = ['res5']
+            feat = [outputs["backbone_features"][i] for i in idx]
+            feat_old = [outputs_old["backbone_features"][i] for i in idx]
+            losses['loss_kd_backbone'] = sum([self.L2_loss(output, output_old) 
+                                             for output, output_old in zip(feat, feat_old)]) / len(idx)     # （B,Q,D)
 
         return losses
     

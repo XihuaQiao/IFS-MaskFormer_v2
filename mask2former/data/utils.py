@@ -148,7 +148,7 @@ def load_novel_seg(list_dir, task, shot, ishot, dataname=None, root=None):
     random.shuffle(dataset_dicts)
 
     print(f"len of novel_seg dataset_dicts is {len(dataset_dicts)}")
-    print(f"selected images - {selected}")
+    # print(f"selected images - {selected}")
 
     return dataset_dicts
 

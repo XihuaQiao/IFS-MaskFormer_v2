@@ -37,11 +37,10 @@ def main(args):
         print(f"using existing indices file from {file_path}")
         cal_metrix = np.load(file_path)
     else:
-        print(f"computing indices file to {file_path}")
         model = build_model(cfg)
         dataset_name = cfg.DATASETS.TRAIN[0]
         mapper = IncrementalFewShotSemanticDatasetMapper(cfg, is_train=False)
-        data_loader = build_detection_test_loader(cfg, dataset_name, mapper)
+        data_loader, _ = build_detection_test_loader(cfg, dataset_name, mapper)
         evaluator = get_evaluator(cfg, dataset_name, None)
 
         DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(

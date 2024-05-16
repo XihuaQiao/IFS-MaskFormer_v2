@@ -77,28 +77,29 @@ def register_all_pascal(task, step, shot, ishot, extra=False):
     image_dir = os.path.join(root, 'JPEGImages')
     gt_dir = os.path.join(root, 'SegmentationClassAug')
 
-    # prepare train dataset
-    d = f"list/voc/{task}/train_step{step}{'_extra' if extra else ''}.pth"
-    all_name = f"voc_IFS_sem_seg_train_step{step}"
-    if step > 0 and not extra:
-        all_name = f"{all_name}_shot_{shot}"
-    if step == 0 or extra:
-        DatasetCatalog.register(
-            all_name,
-            lambda d=d: load_base_seg(d, root),
+    for step in [0, 1]:
+        # prepare train dataset
+        d = f"list/voc/{task}/train_step{step}{'_extra' if extra else ''}.pth"
+        all_name = f"voc_IFS_sem_seg_train_step{step}"
+        if step > 0 and not extra:
+            all_name = f"{all_name}_shot_{shot}"
+        if step == 0 or extra:
+            DatasetCatalog.register(
+                all_name,
+                lambda d=d: load_base_seg(d, root),
+            )
+        else:
+            DatasetCatalog.register(
+                all_name,
+                lambda d=d: load_novel_seg(d, task, shot, ishot, dataname='voc', root=root),
+            )
+        MetadataCatalog.get(all_name).set(
+            image_root=image_dir,
+            sem_seg_root=gt_dir,
+            evaluator_type="IFS_sem_seg",
+            ignore_label=255,
+            **meta,
         )
-    else:
-        DatasetCatalog.register(
-            all_name,
-            lambda d=d: load_novel_seg(d, task, shot, ishot, dataname='voc', root=root),
-        )
-    MetadataCatalog.get(all_name).set(
-        image_root=image_dir,
-        sem_seg_root=gt_dir,
-        evaluator_type="IFS_sem_seg",
-        ignore_label=255,
-        **meta,
-    )
 
     # prepare valid dataset
     d = f'list/voc/{task}/valid.pth'

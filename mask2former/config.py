@@ -39,6 +39,7 @@ def add_maskformer2_config(cfg):
     cfg.MODEL.KD.FEATURE_WEIGHT = 0.1
     cfg.MODEL.KD.MASK_WEIGHT = 0.1
     cfg.MODEL.KD.CLASS_WEIGHT = 0.1
+    cfg.MODEL.KD.BACKBONE_WEIGHT = 0.1
     cfg.MODEL.KD.TEMPERATURE = 2.0
 
     cfg.MODEL.CON = CN()

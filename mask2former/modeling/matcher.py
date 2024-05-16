@@ -9,7 +9,7 @@ from scipy.optimize import linear_sum_assignment
 from torch import nn
 from torch.cuda.amp import autocast
 
-from copy import copy
+import copy
 
 from detectron2.projects.point_rend.point_features import point_sample
 
@@ -140,7 +140,7 @@ class HungarianMatcher(nn.Module):
                 cost_mask = batch_sigmoid_ce_loss_jit(out_mask, tgt_mask)
 
                 # Compute the dice loss betwen masks
-                cost_dice = batch_dice_loss_jit(out_mask, tgt_mask)
+                cost_dice = batch_dice_loss(out_mask, tgt_mask)
             
             # Final cost matrix
             C = (
@@ -167,6 +167,8 @@ class HungarianMatcher(nn.Module):
         _outputs = {}
         _outputs["pred_logits"] = outputs["pred_logits"][:, [i for i in range(num_queries) if i not in queries], ...]
         _outputs["pred_masks"] = outputs["pred_masks"][:, [i for i in range(num_queries) if i not in queries], ...]
+
+        
         
         res = self.memory_efficient_forward(_outputs, targets)
         for i in range(len(res)):
@@ -199,6 +201,16 @@ class HungarianMatcher(nn.Module):
         """
         res1 = self.memory_efficient_forward(outputs, targets)
 
+        # novel_targets = copy.deepcopy(targets)
+        # for i in range(len(novel_targets)):
+        #     tmp = []
+        #     for j, lbl in enumerate(novel_targets[i]['labels']):
+        #         if lbl in [16, 17, 18, 19, 20]:
+        #             tmp.append(j)
+        #     novel_targets[i]['labels'] = novel_targets[i]['labels'][tmp]
+        #     # print(f"labels - {novel_targets[i]['labels']}")
+        #     novel_targets[i]['masks'] = novel_targets[i]['masks'][tmp]
+
         num_queries = outputs['pred_logits'].shape[1]
         queries = set([x.item() for sublist in [indice[0] for indice in res1] for x in sublist])
         res2 = self.extra_matching(queries, outputs, targets, num_queries)
@@ -211,7 +223,7 @@ class HungarianMatcher(nn.Module):
         # else:
         #     return [res1]
 
-        return [res1]
+        return [res1, res2]
 
     def __repr__(self, _repr_indent=4):
         head = "Matcher " + self.__class__.__name__

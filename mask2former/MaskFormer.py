@@ -115,6 +115,7 @@ class MaskFormer(nn.Module):
             weight_dict["loss_kd_feature"] = cfg.MODEL.KD.FEATURE_WEIGHT
             weight_dict["loss_kd_class"] = cfg.MODEL.KD.CLASS_WEIGHT
             weight_dict["loss_kd_mask"] = cfg.MODEL.KD.MASK_WEIGHT
+            weight_dict["loss_kd_backbone"] = cfg.MODEL.KD.BACKBONE_WEIGHT
             # weight_dict["loss_kd_query"] = 1
             # weight_dict["loss_kd_backbone"] = 0.5
 
@@ -168,7 +169,7 @@ class MaskFormer(nn.Module):
             weight_dict=weight_dict,
             eos_coef=no_object_weight,
             # losses=losses.__add__(["kd"]) if cfg.MODEL.KD.ENABLE else losses,
-            losses=["masks"],
+            losses=["masks", "labels"],
             num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
             oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
             importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
@@ -215,8 +216,10 @@ class MaskFormer(nn.Module):
 
         #TODO background类别要如何处理？background不参与
 
-        novel_outputs = {k: v[:, :self.num_queries:, ...] for k, v in outputs.items() if k != 'aux_outputs' and k != 'multi_scale_features'}
-        base_outputs = {k: v[:, self.num_queries:, ...] for k, v in outputs.items() if k != 'aux_outputs' and k != 'multi_scale_features'}
+        sep_idx = ['pred_masks', 'pred_logits']
+
+        novel_outputs = {k: v[:, :self.num_queries, ...] for k, v in outputs.items() if k in sep_idx}
+        base_outputs = {k: v[:, self.num_queries:, ...] for k, v in outputs.items() if k in sep_idx}
         # base_outputs["multi_scale_features"] = outputs["multi_scale_features"]
 
         novel_targets = []
@@ -293,7 +296,7 @@ class MaskFormer(nn.Module):
                 
                 for k in list(novel_losses.keys()):
                     if k in self.novelCriterion.weight_dict:
-                        losses[f"novel_{k}"] = self.novelCriterion.weight_dict[k] * novel_losses[k] * 0.5
+                        losses[f"novel_{k}"] = self.novelCriterion.weight_dict[k] * novel_losses[k]
 
             if self.baseCriterion:
                 base_losses = self.baseCriterion(base_outputs, base_targets, outputs_old)
@@ -307,7 +310,7 @@ class MaskFormer(nn.Module):
 
                 for k in list(base_losses.keys()):
                     if k in self.baseCriterion.weight_dict:
-                        losses[f"base_{k}"] = self.baseCriterion.weight_dict[k] * base_losses[k] * 0.02
+                        losses[f"base_{k}"] = self.baseCriterion.weight_dict[k] * base_losses[k] * 0.2
 
             return losses
         else:

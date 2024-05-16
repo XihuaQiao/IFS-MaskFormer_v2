@@ -124,5 +124,5 @@ class MaskFormerHead(nn.Module):
         # final_features - [B,D,128,128]
 
         assert self.transformer_in_feature == "multi_scale_pixel_decoder", f"MaskFormer_Head: transformer_in_feature is {self.transformer_in_feature}"
-        predictions = self.predictor(multi_scale_features, mask_features, mask)
+        predictions = self.predictor(multi_scale_features, mask_features, mask, features)
         return predictions
