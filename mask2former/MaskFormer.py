@@ -21,6 +21,8 @@ from .modeling.criterion import SetCriterion
 from .modeling.matcher import HungarianMatcher
 from .modeling.transformer_decoder.position_encoding import PositionEmbeddingSine
 
+from .modeling.contrastive_learning.utils import PixelContrastLoss
+
 
 
 @META_ARCH_REGISTRY.register()
@@ -36,6 +38,7 @@ class MaskFormer(nn.Module):
         backbone: Backbone,
         sem_seg_head: nn.Module,
         criterion: nn.Module,
+        contrastCriterion: nn.Module,
         novelCriterion: nn.Module,
         baseCriterion: nn.Module,
         num_queries: int,
@@ -58,6 +61,7 @@ class MaskFormer(nn.Module):
         self.backbone = backbone
         self.sem_seg_head = sem_seg_head
         self.criterion = criterion
+        self.contrastCriterion = contrastCriterion
         self.novelCriterion = novelCriterion
         self.baseCriterion = baseCriterion
         self.num_queries = num_queries
@@ -148,6 +152,12 @@ class MaskFormer(nn.Module):
             extra=cfg.DATASETS.EXTRA,
         )
 
+        contrastCriterion = PixelContrastLoss(
+            temperature=0.07,
+            base_temperature=0.07,
+            ignore_label=[],
+        )
+
         novelCriterion = SetCriterion(
             sem_seg_head.num_classes,
             matcher=matcher,
@@ -184,6 +194,7 @@ class MaskFormer(nn.Module):
             "sem_seg_head": sem_seg_head,
             "criterion": criterion,
             "novelCriterion": novelCriterion,
+            "contrastCriterion": contrastCriterion,
             "baseCriterion": baseCriterion,
             "num_queries": cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES,
             "object_mask_threshold": cfg.MODEL.MASK_FORMER.TEST.OBJECT_MASK_THRESHOLD,
@@ -280,6 +291,10 @@ class MaskFormer(nn.Module):
                     losses[k] *= self.criterion.weight_dict[k]
                 else:
                     losses.pop(k)
+
+            if self.contrastCriterion:
+                loss = self.contrastCriterion(targets, outputs, [x['file_name'] for x in batched_inputs])
+                losses['contrast_loss'] = loss * self.contrastCriterion.weight
             
             if self.novelCriterion or self.baseCriterion:
                 novel_outputs, novel_targets, base_outputs, base_targets = self.seperate(outputs, targets)

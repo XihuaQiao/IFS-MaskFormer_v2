@@ -284,8 +284,8 @@ def do_train(cfg, model, model_old, predictor, resume=False, test_loaders = None
         else:
             model.init_novel_stage()
     
-    # max_iter = cfg.SOLVER.MAX_ITER
-    max_iter = 100
+    max_iter = cfg.SOLVER.MAX_ITER
+    # max_iter = 100
 
     periodic_checkpointer = PeriodicCheckpointer(
         checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD, max_iter=max_iter
@@ -314,8 +314,10 @@ def do_train(cfg, model, model_old, predictor, resume=False, test_loaders = None
         else:
             weights = torch.load(d, map_location=model.device)
             model.load_state_dict(weights, strict=False)
-        model_old.load_state_dict(weights, strict=True)
-        predictor.model.load_state_dict(weights, strict=True)
+        if model_old:
+            model_old.load_state_dict(weights, strict=True)
+        if predictor:
+            predictor.model.load_state_dict(weights, strict=True)
 
         # feat = model.sem_seg_head.predictor.class_embed.cls[0].weight.data
         # model_old.sem_seg_head.predictor.imprint_weights_step(feat, -1)

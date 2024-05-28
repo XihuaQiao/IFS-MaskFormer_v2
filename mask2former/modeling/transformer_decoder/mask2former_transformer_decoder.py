@@ -31,6 +31,23 @@ def build_transformer_decoder(cfg, in_channels, mask_classification=True):
     return TRANSFORMER_DECODER_REGISTRY.get(name)(cfg, in_channels, mask_classification)
 
 
+class ProjectionHead(nn.Module):
+    def __init__(self, dim_in, proj_dim=256, proj='convmlp', bn_type='torchsyncbn'):
+        super(ProjectionHead, self).__init__()
+
+        if proj == 'linear':
+            self.proj = nn.Conv2d(dim_in, proj_dim, kernel_size=1)
+        elif proj == 'convmlp':
+            self.proj = nn.Sequential(
+                nn.Conv2d(dim_in, dim_in, kernel_size=1),
+                nn.SyncBatchNorm(dim_in),
+                nn.ReLU(),
+                nn.Conv2d(dim_in, proj_dim, kernel_size=1),
+            )
+
+    def forward(self, x):
+        return F.normalize(self.proj(x), p=2, dim=1)
+
 class SelfAttentionLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dropout=0.0,
@@ -360,6 +377,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             # self.class_embed = MicroSegHead(classes, hidden_dim=hidden_dim)
             # self.class_embed = MLPHead(hidden_dim, hidden_dim, 22, 3)
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
+        self.proj_head = ProjectionHead(dim_in=hidden_dim, proj_dim=hidden_dim)
 
         # self.fc1 = nn.Linear(num_queries, num_queries*5)
         # self.relu = nn.ReLU()
@@ -489,7 +507,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         predictions_mask = []
 
         # prediction heads on learnable query features
-        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, size_list[0], multi_scale_features)
+        outputs_class, outputs_mask, attn_mask, _ = self.forward_prediction_heads(output, mask_features, size_list[0], multi_scale_features)
         predictions_class.append(outputs_class)
         predictions_mask.append(outputs_mask)
 
@@ -515,7 +533,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 output
             )
 
-            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, size_list[(i + 1) % self.num_feature_levels], multi_scale_features)
+            outputs_class, outputs_mask, attn_mask, embedding = self.forward_prediction_heads(output, mask_features, size_list[(i + 1) % self.num_feature_levels], multi_scale_features)
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
@@ -528,12 +546,13 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 predictions_class if self.mask_classification else None, predictions_mask
             ) if self.step == 0 else None,
             'multi_scale_features': multi_scale_features,
+            'embedding': embedding,
             'backbone_features': features,
             # 'query_features': output.transpose(0, 1),
         }
         return out
 
-    def forward_prediction_heads(self, output, mask_features, attn_mask_target_size, multi_scale_features=None):
+    def forward_prediction_heads(self, output, mask_features, attn_mask_target_size, multi_scale_features=None, feat_index=0):
         decoder_output = self.decoder_norm(output)
         decoder_output = decoder_output.transpose(0, 1)
 
@@ -557,10 +576,11 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         # embedding = self.class_embed(masked_features)       # (B,Q,C)
         # outputs_class = self.fc2(self.relu(self.fc1(embedding.transpose(-2, -1)))).transpose(-2, -1)
 
-        mask = F.interpolate(outputs_mask.clone(), size=multi_scale_features[0].shape[-2:], mode='bilinear', align_corners=False).sigmoid()
-        masked_features = torch.einsum("bqhw,bdhw->bqd", mask, multi_scale_features[0])
+        mask = F.interpolate(outputs_mask.clone(), size=multi_scale_features[feat_index].shape[-2:], mode='bilinear', align_corners=False).sigmoid()
+        masked_features = torch.einsum("bqhw,bdhw->bqd", mask, multi_scale_features[feat_index])
         outputs_class = self.class_embed(masked_features)
 
+        embedding = self.proj_head(multi_scale_features[feat_index])
         
         # NOTE: prediction is of higher-resolution
         # [B, Q, H, W] -> [B, Q, H*W] -> [B, h, Q, H*W] -> [B*h, Q, HW]
@@ -570,7 +590,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         attn_mask = (attn_mask.sigmoid().flatten(2).unsqueeze(1).repeat(1, self.num_heads, 1, 1).flatten(0, 1) < 0.5).bool()
         attn_mask = attn_mask.detach()
 
-        return outputs_class, outputs_mask, attn_mask
+        return outputs_class, outputs_mask, attn_mask, embedding
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_seg_masks):
